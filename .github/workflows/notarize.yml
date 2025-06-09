@@ -1,0 +1,195 @@
+name: Notarize and Release DMG
+
+on:
+  push:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  notarize:
+    runs-on: macos-latest
+    env:
+      KEYCHAIN_NAME: notary-keychain
+      KEYCHAIN_PASSWORD: dummy
+
+    steps:
+      - name: 🐣 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🌾 Set up GitHub CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Get latest successful run ID
+        run: |
+          run_id=$(gh run list --repo "qgis/QGIS" \
+                    --workflow "build-macos-qt6.yml" \
+                    --limit 10 \
+                    --json databaseId,status,conclusion | \
+                    jq '[.[] | select(.status == "completed" and .conclusion == "success")] | sort_by(.databaseId) | reverse | .[0].databaseId')
+          echo "Found run_id=$run_id"
+          echo "RUN_ID=$run_id" >> $GITHUB_ENV
+
+      - name: List artifacts from that run
+        run: |
+          artifact_name=$(gh api repos/qgis/QGIS/actions/runs/${RUN_ID}/artifacts \
+            --jq '.artifacts[] | select(.name | test("^qgis-.*-dmg$")) | .name' | head -n 1)
+
+          if [ -z "$artifact_name" ]; then
+            echo "❌ No matching artifact found for pattern qgis-*-dmg"
+            exit 1
+          fi
+
+          echo "Found artifact: $artifact_name"
+          echo "ARTIFACT_NAME=$artifact_name" >> $GITHUB_ENV
+
+      - name: 📥 Download artifact from qgis/QGIS
+        run: |
+          gh run download ${RUN_ID} \
+            --repo qgis/QGIS \
+            --name ${ARTIFACT_NAME} \
+            --dir ./downloaded-artifacts
+            
+      - name: 🔑 Import signing certificate
+        run: |
+          echo "${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}" | base64 --decode > cert.p12
+          P12_PATH=cert.p12
+          P12_PASSWORD=${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+          security import "$P12_PATH" -k "$KEYCHAIN_NAME" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-keychain-settings -t 3600 -l "$KEYCHAIN_NAME"
+          security list-keychains -d user -s "$KEYCHAIN_NAME" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+
+      - name: 🐎 Mount the DMG
+        id: mount
+        run: |
+          MOUNT_OUTPUT=$(hdiutil attach ./downloaded-artifacts/*.dmg)
+          echo "$MOUNT_OUTPUT"
+          MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -oE '/Volumes/.*' | head -n 1)
+          echo "MOUNT_POINT=$MOUNT_POINT"
+          ls -la "$MOUNT_POINT/.background"
+          cp -R "$MOUNT_POINT"/*.app .
+
+      - name: 🖋️ Clean and sign app
+        run: |
+          APP_PATH=$(echo ./*.app)
+
+          # Step 0: relocate python files
+          MACOS_DIR="$APP_PATH/Contents/MacOS"
+          PLUGIN_DIR="$APP_PATH/Contents/PlugIns"
+          FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
+          SCRIPT_DIR="$APP_PATH/Contents/Resources/scripts"
+          PYTHON_DIR="$APP_PATH/Contents/Resources/python3.11"
+
+          # Make target script directory
+          mkdir -p "$SCRIPT_DIR"
+
+          # Find non-Mach-O files in Contents/MacOS (Should be py files)
+          find "$MACOS_DIR" -type f -exec file {} \; | grep -v 'Mach-O' | cut -d: -f1 | while read -r file; do
+            fname=$(basename "$file")
+            echo "Relocating $fname"
+
+            # Move to scripts dir
+            mv "$file" "$SCRIPT_DIR/$fname"
+
+            # Create symlink back in MacOS dir
+            ln -s "../Resources/scripts/$fname" "$MACOS_DIR/$fname"
+          done
+
+          # Find leftover files to be removed
+          find "$APP_PATH" -type f \( -name "*.o" -o -name "*.a" -o -name "*.prl"  -o -name "*.la" -o -name "*.pyc" \) -print -delete
+
+          PYTHON_MODULES_DIR=$(find "$FRAMEWORKS_DIR/lib" -maxdepth 1 -type d -name "python3.*" | head -n 1)
+
+          mv "$PYTHON_MODULES_DIR" "$PYTHON_DIR"
+          ln -s "../../Resources/python3.11" "$PYTHON_MODULES_DIR"
+
+          # Find non-Mach-O files in Frameworks
+          non_macho_files=$(find "$FRAMEWORKS_DIR" -type f -exec file {} \; | grep -v 'Mach-O' | cut -d: -f1)
+
+          echo "✅ Frameworks folder is clean and ready for signing."
+
+          # Step 1a: Sign all libraries inside the .app
+          find "$APP_PATH" -type f \( -name "*.so" -or -name "*.dylib" \) -print0 | while IFS= read -r -d '' file; do
+            echo "Signing: $file"
+            codesign --force --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "$file" || {
+              echo "⚠️ Failed to sign: $file"
+            }
+            codesign -dv "$file" 2>&1 | grep -i 'identifier\|signing time\|authority\|flags\|CDHash' || echo "❌ $file is unsigned or broken"
+          done
+
+          # Step 1b: Sign all executables inside the .app
+          find "$APP_PATH" -type f -perm +111 -print0 | while IFS= read -r -d '' file; do
+            echo "Signing: $file"
+            codesign --force --sign "Developer ID Application" --options runtime --timestamp --keychain "$KEYCHAIN_NAME" "$file" || {
+              echo "⚠️ Failed to sign: $file"
+            }
+            codesign -dv "$file" 2>&1 | grep -i 'identifier\|signing time\|authority\|flags\|CDHash' || echo "❌ $file is unsigned or broken"
+          done
+
+          # Step 2: Sign top-level .app with hardened runtime (for notarization)
+          codesign --force --options runtime --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "$APP_PATH"
+
+          # Step 3: Verify
+          codesign --verify --deep --strict "$APP_PATH"
+
+
+      - name: 🔧 Recreate DMG (clean signed app)
+        run: |
+          APP_PATH=$(echo ./*.app)
+
+          # Build a new compressed, notarization-ready DMG
+          hdiutil create \
+            -volname "QGIS Installer" \
+            -srcfolder $APP_PATH \
+            -fs HFS+ \
+            -format UDZO \
+            notarized.dmg
+
+          codesign --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" notarized.dmg
+
+      - name: 🔏 Notarize the new DMG
+        run: |
+          echo "${{ secrets.APPSTORE_PRIVATE_KEY }}" > authkey.p8
+
+          echo "📝 Submitting notarized.dmg to Apple Notary Service..."
+          submission_output=$(mktemp)
+          xcrun notarytool submit notarized.dmg \
+            --key authkey.p8 \
+            --key-id "${{ secrets.API_KEY_ID }}" \
+            --issuer "${{ secrets.API_KEY_ISSUER_ID }}" \
+            --wait | tee "$submission_output"
+
+          NOTARIZATION_ID=$(grep -m1 '^  id:' "$submission_output" | awk '{print $2}')
+
+          if [ -z "$NOTARIZATION_ID" ]; then
+            echo "❌ Failed to extract Notarization ID."
+            cat "$submission_output"
+            exit 1
+          fi
+
+          echo "📦 Notarization Submission ID: $NOTARIZATION_ID"
+          echo "NOTARIZATION_ID=$NOTARIZATION_ID" >> "$GITHUB_ENV"
+
+      - name: 📄 Show notarization log
+        if: always()
+        run: |
+          echo "${{ secrets.APPSTORE_PRIVATE_KEY }}" > authkey.p8
+
+          xcrun notarytool log "$NOTARIZATION_ID" \
+            --key authkey.p8 \
+            --key-id "${{ secrets.API_KEY_ID }}" \
+            --issuer "${{ secrets.API_KEY_ISSUER_ID }}"
+
+      - name: 🥓 Staple the DMG
+        run: |
+          xcrun stapler staple notarized.dmg
+
+      - name: 📤 Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarized-dmg
+          path: notarized.dmg
