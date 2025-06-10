@@ -21,7 +21,7 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: Get latest successful run ID
+      - name: 🏮 Get latest successful run ID
         run: |
           run_id=$(gh run list --repo "qgis/QGIS" \
                     --workflow "build-macos-qt6.yml" \
@@ -31,7 +31,7 @@ jobs:
           echo "Found run_id=$run_id"
           echo "RUN_ID=$run_id" >> $GITHUB_ENV
 
-      - name: List artifacts from that run
+      - name: 🎋 List artifacts from that run
         run: |
           artifact_name=$(gh api repos/qgis/QGIS/actions/runs/${RUN_ID}/artifacts \
             --jq '.artifacts[] | select(.name | test("^qgis-.*-dmg$")) | .name' | head -n 1)
@@ -70,8 +70,8 @@ jobs:
           echo "$MOUNT_OUTPUT"
           MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -oE '/Volumes/.*' | head -n 1)
           echo "MOUNT_POINT=$MOUNT_POINT"
-          ls -la "$MOUNT_POINT/.background"
           cp -R "$MOUNT_POINT"/*.app .
+          echo "MOUNT_POINT=$MOUNT_POINT" >> "$GITHUB_ENV"
 
       - name: 🖋️ Clean and sign app
         run: |
@@ -139,25 +139,33 @@ jobs:
 
       - name: 🔧 Recreate DMG (clean signed app)
         run: |
-          APP_PATH=$(echo ./*.app)
+          APP_PATH=$(echo *.app)
+          QGIS_APP_NAME="${APP_PATH%.*}"
 
-          # Build a new compressed, notarization-ready DMG
-          hdiutil create \
-            -volname "QGIS Installer" \
-            -srcfolder $APP_PATH \
-            -fs HFS+ \
-            -format UDZO \
-            notarized.dmg
+          brew install create-dmg
+          create-dmg --volname "QGIS Installer" \
+            --hide-extension "${QGIS_APP_NAME}.app" \
+            --background "$MOUNT_POINT/.background/installer_background.png" \
+            --volicon "$MOUNT_POINT/.VolumeIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 512 320 \
+            --icon-size 100 \
+            --icon "${QGIS_APP_NAME}.app" 130 160 \
+            --app-drop-link 400 155 \
+            "${QGIS_APP_NAME}.dmg" \
+            "$APP_PATH"
 
-          codesign --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" notarized.dmg
+          codesign --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "${QGIS_APP_NAME}.dmg"
+
+          echo "QGIS_APP_NAME=$QGIS_APP_NAME" >> "$GITHUB_ENV"
 
       - name: 🔏 Notarize the new DMG
         run: |
           echo "${{ secrets.APPSTORE_PRIVATE_KEY }}" > authkey.p8
 
-          echo "📝 Submitting notarized.dmg to Apple Notary Service..."
+          echo "📝 Submitting ${QGIS_APP_NAME}.dmg to Apple Notary Service..."
           submission_output=$(mktemp)
-          xcrun notarytool submit notarized.dmg \
+          xcrun notarytool submit ${QGIS_APP_NAME}.dmg \
             --key authkey.p8 \
             --key-id "${{ secrets.API_KEY_ID }}" \
             --issuer "${{ secrets.API_KEY_ISSUER_ID }}" \
@@ -186,10 +194,10 @@ jobs:
 
       - name: 🥓 Staple the DMG
         run: |
-          xcrun stapler staple notarized.dmg
+          xcrun stapler staple ${QGIS_APP_NAME}.dmg
 
       - name: 📤 Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: notarized-dmg
-          path: notarized.dmg
+          name: ${{ env.QGIS_APP_NAME }}
+          path: ${{ env.QGIS_APP_NAME }}.dmg
