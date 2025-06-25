@@ -25,7 +25,7 @@ jobs:
         run: |
           run_id=$(gh run list --repo "qgis/QGIS" \
                     --workflow "build-macos-qt6.yml" \
-                    --branch main \
+                    --branch master \
                     --limit 10 \
                     --json databaseId,status,conclusion | \
                     jq '[.[] | select(.status == "completed" and .conclusion == "success")] | sort_by(.databaseId) | reverse | .[0].databaseId')
