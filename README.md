@@ -6,6 +6,6 @@ As such, they are currently experimental and meant for testing only.
 
 Packages are signed with OPENGIS.ch certificate.
 
-[💾 Download the latest build for testing](https://nightly.link/opengisch/qgis-notarize/workflows/notarize/main/QGIS-PR60039.zip)
+[💾 Download the latest build for testing](https://nightly.link/opengisch/qgis-notarize/workflows/notarize/main/QGIS-master.zip)
 
 This is a public preview and will be moved to the https://github.org/qgis organization and run with OSGEO certificates before being published as stable release with QGIS 4.0 in October 2026.

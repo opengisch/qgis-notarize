@@ -12,6 +12,12 @@ jobs:
     env:
       KEYCHAIN_NAME: notary-keychain
       KEYCHAIN_PASSWORD: dummy
+    
+    strategy:
+      matrix:
+        include:
+          - branch: master
+    
 
     steps:
       - name: 🐣 Checkout code
@@ -25,7 +31,7 @@ jobs:
         run: |
           run_id=$(gh run list --repo "qgis/QGIS" \
                     --workflow "build-macos-qt6.yml" \
-                    --branch master \
+                    --branch ${{ matrix.branch }} \
                     --limit 10 \
                     --json databaseId,status,conclusion | \
                     jq '[.[] | select(.status == "completed" and .conclusion == "success")] | sort_by(.databaseId) | reverse | .[0].databaseId')
@@ -200,5 +206,5 @@ jobs:
       - name: 📤 Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QGIS
+          name: QGIS-${{ matrix.branch }}
           path: ${{ env.QGIS_APP_NAME }}.dmg
