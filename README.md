@@ -7,7 +7,7 @@ Packages are signed with OPENGIS.ch certificate.
 
 # Get It
 
-[💾 Download the latest build for testing](https://nightly.link/opengisch/qgis-notarize/workflows/notarize/main/QGIS-master.zip)
+## [💾 Download the latest build for testing 💾](https://nightly.link/opengisch/qgis-notarize/workflows/notarize/main/QGIS-master.zip)
 
 # Disclaimer
 
