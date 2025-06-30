@@ -138,7 +138,7 @@ jobs:
           done
 
           # Step 2: Sign top-level .app with hardened runtime (for notarization)
-          codesign --force --options runtime --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "$APP_PATH"
+          codesign --force --options runtime --entitlements entitlements.plist --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "$APP_PATH"
 
           # Step 3: Verify
           codesign --verify --deep --strict "$APP_PATH"
