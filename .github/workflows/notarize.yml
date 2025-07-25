@@ -106,7 +106,7 @@ jobs:
             ln -s "../Resources/scripts/$fname" "$MACOS_DIR/$fname"
           done
 
-          # 
+          # The qca openssl plugin causes crashes on some systems. Possibly related to a conflict with a system openssl library which is also loaded. See https://github.com/qgis/QGIS/issues/62569
           rm ${PLUGIN_DIR}/crypto/libqca-ossl.dylib
 
           # Find leftover files to be removed
