@@ -106,6 +106,9 @@ jobs:
             ln -s "../Resources/scripts/$fname" "$MACOS_DIR/$fname"
           done
 
+          # 
+          rm ${PLUGIN_DIR}/crypto/libqca-ossl.dylib
+
           # Find leftover files to be removed
           find "$APP_PATH" -type f \( -name "*.o" -o -name "*.a" -o -name "*.prl"  -o -name "*.la" -o -name "*.pyc" \) -print -delete
 
