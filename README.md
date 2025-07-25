@@ -11,4 +11,4 @@ Packages are signed with OPENGIS.ch certificate.
 
 # Disclaimer
 
-This is a public preview and will be moved to the https://github.org/qgis organization and run with OSGEO certificates before being published as stable release with QGIS 4.0 in October 2025.
+This is a public preview and will be moved to the https://github.com/qgis organization and run with OSGEO certificates before being published as stable release with QGIS 4.0 in October 2025.
