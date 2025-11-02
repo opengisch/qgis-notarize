@@ -85,6 +85,7 @@ jobs:
           APP_PATH=$(echo ./*.app)
 
           # Step 0: relocate python files
+          echo "::group::Relocate Python Files"
           MACOS_DIR="$APP_PATH/Contents/MacOS"
           PLUGIN_DIR="$APP_PATH/Contents/PlugIns"
           FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
@@ -93,7 +94,9 @@ jobs:
 
           # Make target script directory
           mkdir -p "$SCRIPT_DIR"
+          echo "::endgroup::"
 
+          echo "::group::Find non Mach-O files"
           # Find non-Mach-O files in Contents/MacOS (Should be py files)
           find "$MACOS_DIR" -type f -exec file {} \; | grep -v 'Mach-O' | cut -d: -f1 | while read -r file; do
             fname=$(basename "$file")
@@ -105,7 +108,9 @@ jobs:
             # Create symlink back in MacOS dir
             ln -s "../Resources/scripts/$fname" "$MACOS_DIR/$fname"
           done
+          echo "::endgroup::"
 
+          echo "::group::Find leftover files"
           # Find leftover files to be removed
           find "$APP_PATH" -type f \( -name "*.o" -o -name "*.a" -o -name "*.prl"  -o -name "*.la" -o -name "*.pyc" \) -print -delete
 
@@ -118,7 +123,9 @@ jobs:
           non_macho_files=$(find "$FRAMEWORKS_DIR" -type f -exec file {} \; | grep -v 'Mach-O' | cut -d: -f1)
 
           echo "✅ Frameworks folder is clean and ready for signing."
+          echo "::endgroup::"
 
+          echo "::group::Sign all libraries inside the .app"
           # Step 1a: Sign all libraries inside the .app
           find "$APP_PATH" -type f \( -name "*.so" -or -name "*.dylib" \) -print0 | while IFS= read -r -d '' file; do
             echo "Signing: $file"
@@ -127,7 +134,9 @@ jobs:
             }
             codesign -dv "$file" 2>&1 | grep -i 'identifier\|signing time\|authority\|flags\|CDHash' || echo "❌ $file is unsigned or broken"
           done
+          echo "::endgroup::"
 
+          echo "::group::Sign all executables inside the .app"
           # Step 1b: Sign all executables inside the .app
           find "$APP_PATH" -type f -perm +111 -print0 | while IFS= read -r -d '' file; do
             echo "Signing: $file"
@@ -136,12 +145,17 @@ jobs:
             }
             codesign -dv "$file" 2>&1 | grep -i 'identifier\|signing time\|authority\|flags\|CDHash' || echo "❌ $file is unsigned or broken"
           done
+          echo "::endgroup::"
 
+          echo "::group::Sign top-level .app"
           # Step 2: Sign top-level .app with hardened runtime (for notarization)
           codesign --force --options runtime --entitlements entitlements.plist --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN_NAME" "$APP_PATH"
+          echo "::endgroup::"
 
+          echo "::group::Verify"
           # Step 3: Verify
           codesign --verify --deep --strict "$APP_PATH"
+          echo "::endgroup::"
 
 
       - name: 🔧 Recreate DMG (clean signed app)
