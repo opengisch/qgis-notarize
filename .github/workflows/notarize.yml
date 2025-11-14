@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 4 * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [notarize_dmg]
+
 
 jobs:
   notarize:
@@ -28,6 +31,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
       - name: 🏮 Get latest successful run ID
+        if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           run_id=$(gh run list --repo "qgis/QGIS" \
                     --workflow "build-macos-qt6.yml" \
@@ -39,6 +43,7 @@ jobs:
           echo "RUN_ID=$run_id" >> $GITHUB_ENV
 
       - name: 🎋 List artifacts from that run
+        if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           artifact_name=$(gh api repos/qgis/QGIS/actions/runs/${RUN_ID}/artifacts \
             --jq '.artifacts[] | select(.name | test("^qgis-.*-dmg$")) | .name' | head -n 1)
@@ -52,11 +57,30 @@ jobs:
           echo "ARTIFACT_NAME=$artifact_name" >> $GITHUB_ENV
 
       - name: 📥 Download artifact from qgis/QGIS
+        if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           gh run download ${RUN_ID} \
             --repo qgis/QGIS \
             --name ${ARTIFACT_NAME} \
             --dir ./downloaded-artifacts
+
+      - name: 📥 Download artifact from release (repository_dispatch)
+        if: github.event_name == 'repository_dispatch' && github.event.action == 'notarize_dmg'
+        run: |
+          if [ -z "${{ github.event.client_payload.release_tag }}" ]; then
+            echo "❌ client_payload.release_tag is required for repository_dispatch"
+            exit 1
+          fi
+
+          RELEASE_TAG=${{ github.event.client_payload.release_tag }}
+          URL="https://github.com/m-kuhn/QGIS/releases/download/${RELEASE_TAG}/QGIS-${RELEASE_TAG}-Installer.dmg"
+
+          echo "Downloading DMG from $URL"
+          mkdir -p downloaded-artifacts
+          curl -fL "$URL" -o downloaded-artifacts/QGIS-${RELEASE_TAG}-Installer.dmg
+
+          # expose a predictable name for downstream steps
+          echo "ARTIFACT_NAME=QGIS-${RELEASE_TAG}-Installer.dmg" >> $GITHUB_ENV
             
       - name: 🔑 Import signing certificate
         run: |
@@ -221,4 +245,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: QGIS-${{ matrix.branch }}
-          path: ${{ env.QGIS_APP_NAME }}.dmg
+          path: "*.dmg"
+
+      - name: 📦 Upload notarized DMG to source release (m-kuhn/QGIS)
+        if: github.event_name == 'repository_dispatch' && github.event.action == 'notarize_dmg'
+        env:
+          RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "❌ RELEASE_TAG not provided in client_payload"
+            exit 1
+          fi
+
+          FILE=$(ls *.dmg | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "❌ No dmg found to upload"
+            exit 1
+          fi
+
+          # Authenticate gh CLI with a PAT that can write to the main repository
+          echo "${{ secrets.PAT }}" | gh auth login --with-token
+
+          echo "Uploading $FILE to release $RELEASE_TAG on m-kuhn/QGIS (clobber existing asset)"
+          gh release upload "$RELEASE_TAG" "$FILE" --repo m-kuhn/QGIS --clobber
